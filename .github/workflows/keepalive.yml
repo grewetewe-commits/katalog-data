@@ -1,11 +1,12 @@
 name: Keepalive
 
-# GitHub mematikan jadwal workflow di repo publik setelah 60 hari tanpa aktivitas repo. Sebulan sekali semua jadwal
-# dinyalakan ulang supaya otak terus berjalan tanpa perlu diurus.
+# GitHub mematikan jadwal workflow di repo publik setelah 60 hari tanpa aktivitas repo. Seminggu sekali semua jadwal
+# dinyalakan ulang supaya otak terus berjalan tanpa perlu diurus, dan cache Actions lama dibersihkan (tiap putaran
+# menyimpan cache baru; hanya 2 terbaru per jenis yang dipakai, sisanya dihapus supaya tidak menumpuk).
 
 on:
   schedule:
-    - cron: "23 3 1 * *"
+    - cron: "23 3 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -24,3 +25,22 @@ jobs:
           for w in otak.yml mata3d.yml ready.yml keepalive.yml; do
             gh workflow enable "$w" && echo "aktif: $w" || echo "gagal: $w"
           done
+
+      - name: Bersihkan cache lama (simpan 2 terbaru per jenis)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh cache list --limit 500 --sort created_at --order desc --json id,key > caches.json || { echo "daftar cache gagal"; exit 0; }
+          python3 - <<'PY'
+          import json, re, subprocess
+          seen = {}
+          hapus = 0
+          for c in json.load(open('caches.json')):
+              jenis = re.sub(r'-?[0-9]+$', '', c['key'])
+              seen[jenis] = seen.get(jenis, 0) + 1
+              if seen[jenis] > 2:
+                  if subprocess.run(['gh', 'cache', 'delete', str(c['id'])], capture_output=True).returncode == 0:
+                      hapus += 1
+          print(f'cache lama dihapus: {hapus}')
+          PY
