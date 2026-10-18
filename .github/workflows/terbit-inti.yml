@@ -1,0 +1,33 @@
+name: Terbit (inti)
+
+# Dipanggil oleh otak.yml, mata3d.yml, ready.yml, dan terbitkan.yml. Mengambil cabang `data` repo dapur (privat),
+# memvalidasi, lalu menerbitkan HANYA file daftar putih ke cabang `data` repo publik ini (lihat terbitkan.sh).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  terbit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: terbit
+      cancel-in-progress: false
+    steps:
+      - name: Ambil repo publik
+        uses: actions/checkout@v4
+        with:
+          path: publik
+          fetch-depth: 1
+      - name: Ambil kode dapur (privat)
+        uses: actions/checkout@v4
+        with:
+          repository: grewetewe-commits/katalog-embed
+          token: ${{ secrets.TOKEN_DAPUR }}
+          path: dapur
+          fetch-depth: 1
+      - name: Terbitkan data daftar putih
+        run: bash publik/terbitkan.sh dapur publik

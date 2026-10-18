@@ -1,0 +1,87 @@
+name: Mata 3D
+
+# Mengukur bentuk asli pakaian 3D dari file 3D resmi Roblox (kode di repo dapur privat), simpan ke cabang data dapur,
+# lalu terbitkan daftar putih (fisik3d/perlu_ukur.json) ke repo publik ini.
+
+on:
+  schedule:
+    - cron: "41 1,7,13,19 * * *"
+  workflow_dispatch:
+    inputs:
+      menit:
+        description: "Menit maksimum pengukuran (default 40)"
+        default: "40"
+      jenis:
+        description: "Tipe aset dipisah koma (default pakaian layered 64-72)"
+        default: "64,65,66,67,68,69,70,71,72"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mata3d-panen
+  cancel-in-progress: false
+
+jobs:
+  panen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Ambil kode dapur (privat)
+        uses: actions/checkout@v4
+        with:
+          repository: grewetewe-commits/katalog-embed
+          token: ${{ secrets.TOKEN_DAPUR }}
+          path: dapur
+          fetch-depth: 1
+      - name: Ambil data panen & hasil 3D terakhir
+        working-directory: dapur
+        run: |
+          {
+            bash data_cabang.sh ambil otak data/panen.json.gz
+            bash data_cabang.sh ambil mata3d fisik3d
+          } > ambil_log.txt 2>&1 || { echo "ambil gagal"; exit 1; }
+          echo "hasil terakhir diambil"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Pasang dependensi
+        run: pip install "numpy<2" requests > /tmp/pip_log.txt 2>&1 || { tail -n 5 /tmp/pip_log.txt; exit 1; }
+      - name: Ambil kerangka badan dari map
+        continue-on-error: true
+        working-directory: dapur
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          UNIVERSE_ID: "10753176264"
+        run: |
+          python mata3d.py --rangka > rangka_log.txt 2>&1 || { echo "kerangka gagal"; exit 1; }
+          echo "kerangka selesai"
+      - name: Ukur bentuk 3D
+        working-directory: dapur
+        env:
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          MENIT_3D: ${{ github.event.inputs.menit || '40' }}
+          JENIS_3D: ${{ github.event.inputs.jenis || '64,65,66,67,68,69,70,71,72' }}
+          BATAS_3D: "6000"
+          PEKERJA_3D: "4"
+        run: |
+          python mata3d.py --panen > mata3d_log.txt 2>&1 || { echo "pengukuran gagal (log di repo dapur)"; exit 1; }
+          echo "pengukuran selesai"
+      - name: Simpan hasil ke cabang data dapur (privat)
+        if: always()
+        working-directory: dapur
+        shell: bash
+        run: |
+          mkdir -p fisik3d && tail -n 60 mata3d_log.txt > fisik3d/LOG.txt 2>/dev/null || true
+          s=0
+          bash data_cabang.sh simpan mata3d "Mata 3D: panen bentuk (otomatis)" fisik3d > simpan_log.txt 2>&1 || s=$?
+          grep -E '^simpan' simpan_log.txt | sed -E 's/push ditolak.*/push ditolak (detail di repo dapur)/' || true
+          exit $s
+
+  terbit:
+    needs: panen
+    if: always() && needs.panen.result == 'success'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/terbit-inti.yml
+    secrets: inherit

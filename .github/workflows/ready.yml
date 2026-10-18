@@ -1,0 +1,57 @@
+name: Ready outfit
+
+# Koleksi outfit siap pakai publik (kode di repo dapur privat) -> cabang data dapur -> terbit daftar putih.
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ready-outfit-collection
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - name: Ambil kode dapur (privat)
+        uses: actions/checkout@v4
+        with:
+          repository: grewetewe-commits/katalog-embed
+          token: ${{ secrets.TOKEN_DAPUR }}
+          path: dapur
+          fetch-depth: 1
+      - name: Ambil koleksi & kursor terakhir
+        working-directory: dapur
+        run: |
+          bash data_cabang.sh ambil ready bank/ready_outfits.json data/ready_outfit_cursor.json data/ready_outfit_report.json > ambil_log.txt 2>&1 || { echo "ambil gagal"; exit 1; }
+          echo "koleksi terakhir diambil"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Uji & kumpulkan
+        working-directory: dapur
+        run: |
+          node --test test_ready_outfits.mjs > uji_log.txt 2>&1 || { echo "uji ready gagal"; exit 1; }
+          node ready_outfits.mjs > ready_log.txt 2>&1 || { echo "pengumpulan gagal"; exit 1; }
+          echo "koleksi diperbarui"
+      - name: Simpan ke cabang data dapur (privat)
+        working-directory: dapur
+        shell: bash
+        run: |
+          s=0
+          bash data_cabang.sh simpan ready "Refresh public ready outfit references" bank/ready_outfits.json data/ready_outfit_cursor.json data/ready_outfit_report.json > simpan_log.txt 2>&1 || s=$?
+          grep -E '^simpan' simpan_log.txt | sed -E 's/push ditolak.*/push ditolak (detail di repo dapur)/' || true
+          exit $s
+
+  terbit:
+    needs: collect
+    permissions:
+      contents: write
+    uses: ./.github/workflows/terbit-inti.yml
+    secrets: inherit

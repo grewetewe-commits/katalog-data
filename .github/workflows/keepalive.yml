@@ -1,0 +1,26 @@
+name: Keepalive
+
+# GitHub mematikan jadwal workflow di repo publik setelah 60 hari tanpa aktivitas repo. Sebulan sekali semua jadwal
+# dinyalakan ulang supaya otak terus berjalan tanpa perlu diurus.
+
+on:
+  schedule:
+    - cron: "23 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+jobs:
+  hidupkan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Nyalakan ulang jadwal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for w in otak.yml mata3d.yml ready.yml keepalive.yml; do
+            gh workflow enable "$w" && echo "aktif: $w" || echo "gagal: $w"
+          done

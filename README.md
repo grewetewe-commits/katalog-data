@@ -1,29 +1,27 @@
 # Data Katalog Praktis
 
-Repo publik ini menyediakan data hasil untuk map Roblox **Katalog Praktis**.
-Cabang `data` berisi snapshot JSON yang telah divalidasi, dengan satu commit tanpa induk.
-Cabang `main` hanya berisi workflow, pengirim/validator `terbitkan.sh`, dan panduan ini.
-Kode pengolah, bahan mentah, hasil latihan, dan log lengkap berada di repo dapur terpisah.
+Repo publik ini hanya berisi **data jadi** untuk map Roblox **Katalog Praktis**, tanpa kode pengolah.
 
-Penerbitan memakai daftar putih ketat. Paket yang tidak lengkap atau versinya tidak konsisten
-ditolak sebelum push; data publik sebelumnya tetap tersedia. Identitas dan harga item adalah
-snapshot, sehingga map tetap perlu memeriksa detail resmi Roblox.
+- Cabang `data`: snapshot JSON yang sudah divalidasi (satu commit tanpa riwayat, ditimpa tiap terbit).
+  Map membaca file di sini lewat `raw.githubusercontent.com` dan CDN jsDelivr.
+- Cabang `main`: workflow, `terbitkan.sh` (validator + penerbit daftar putih), dan panduan ini.
+- Kode otak, data mentah, laporan, dan log lengkap ada di repo dapur **privat** (`katalog-embed`).
 
-## Penyiapan pemilik
+## Cara kerja
 
-1. Pasang secret `TOKEN_DAPUR` dengan akses Contents read/write hanya ke `katalog-embed`,
-   serta `ROBLOX_API_KEY`. Jangan menaruh nilainya di file, issue, atau komentar.
-2. Pastikan helper migrasi sudah ada di `main` dapur. Jalankan `terbitkan.yml`, lalu `ready.yml`,
-   periksa isi cabang `data` dan log publik. Jalankan satu putaran `otak.yml` penuh.
-3. Setelah lulus dan map membaca repo baru, hapus jadwal/push otomatis di dapur dan
-   set repository variable `MIGRATION_ACTIVE` = `true` di repo ini untuk menyalakan jadwal baru.
-   Selama penyiapan, hanya dispatch manual yang memproses data agar tidak berjalan ganda.
-4. Baru kemudian pemilik mengubah dapur menjadi privat. Simpan tanggal kedaluwarsa token
-   dan perbarui secret sebelum tanggal tersebut.
+1. Workflow terjadwal (`otak`, `mata3d`, `ready`) meng-checkout kode dapur memakai secret `TOKEN_DAPUR`,
+   menjalankannya, dan menyimpan hasil lengkap ke cabang `data` repo dapur (privat).
+2. Job `terbit` (`terbit-inti.yml`) mengambil cabang itu, memvalidasi, lalu menerbitkan **hanya** file daftar putih
+   ke cabang `data` repo ini. Paket tidak lengkap / versi mundur ditolak; data publik lama tetap dipakai.
+3. Log publik sengaja ringkas. Log lengkap: `LOG_TERAKHIR.txt` di cabang data dapur, dan cabang `diag` dapur bila gagal.
+4. `keepalive` menyalakan ulang jadwal tiap bulan (GitHub mematikan jadwal repo publik setelah 60 hari sepi).
+5. Selama masa pindah, workflow di repo dapur tetap ada sebagai **cadangan**: otomatis dilewati bila repo ini
+   sudah menerbitkan hasil segar (< 8 jam), dan otomatis jalan lagi bila repo ini berhenti menerbitkan.
 
-Tidak ada pemicu pull request, artifact, atau cache hasil pengolahan privat. Cache yang
-diizinkan hanya unduhan model CLIP publik. Runner yang digunakan adalah runner standar
-repo publik; tidak ada API AI berbayar atau pengaturan billing yang dipasang.
-Layanan tetap memiliki batas teknis, perubahan kebijakan, dan kemungkinan gangguan;
-tidak ada jaminan gratis tanpa batas selamanya. `keepalive` juga dapat dinonaktifkan
-GitHub setelah tidak ada aktivitas, jadi periksa notifikasi dan status jadwal.
+## Rahasia yang dibutuhkan (Settings → Secrets and variables → Actions)
+
+- `TOKEN_DAPUR`: fine-grained token, Contents read/write untuk `katalog-embed` (dan `katalog-data`).
+  **Catat tanggal kedaluwarsanya** dan perbarui sebelum habis. Kalau habis: workflow gagal, map tetap memakai data terakhir.
+- `ROBLOX_API_KEY`: API key Open Cloud yang sama dengan yang dipakai repo dapur.
+
+Tidak ada trigger pull request, artifact, atau cache data privat yang bisa diunduh publik.

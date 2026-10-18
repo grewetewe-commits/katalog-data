@@ -1,0 +1,183 @@
+name: Otak
+
+# Kode otak ada di repo PRIVAT katalog-embed (dapur). Workflow ini meng-checkout kode itu dengan secret TOKEN_DAPUR,
+# menjalankannya, menyimpan hasil LENGKAP ke cabang `data` repo privat, lalu menerbitkan hanya file daftar putih
+# (yang dibaca map Roblox) ke cabang `data` repo publik ini. Log publik sengaja dibuat sangat ringkas; log lengkap
+# disimpan di repo privat (LOG_TERAKHIR.txt di cabang data, cabang `diag` bila gagal).
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      menit_panen:
+        description: "Menit sejak mulai sampai panen outfit berhenti (default 75)"
+        default: "75"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: otak
+  cancel-in-progress: false
+
+jobs:
+  otak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    steps:
+      - name: Ambil kode dapur (privat)
+        uses: actions/checkout@v4
+        with:
+          repository: grewetewe-commits/katalog-embed
+          token: ${{ secrets.TOKEN_DAPUR }}
+          path: dapur
+          fetch-depth: 1
+
+      - name: Ambil hasil terakhir dari cabang data dapur
+        working-directory: dapur
+        run: |
+          {
+            bash data_cabang.sh ambil otak model meta bank/outfit_0.json bank/outfit_1.json bank/outfit_2.json bank/outfit_3.json data/panen.json.gz out
+            bash data_cabang.sh ambil ready bank/ready_outfits.json
+            bash data_cabang.sh ambil mata3d fisik3d
+          } > ambil_log.txt 2>&1 || { echo "ambil gagal"; exit 1; }
+          echo "hasil terakhir diambil"
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache model CLIP (publik)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-clip-vit-b32-v1
+
+      - name: Pulihkan sidik jari (embedding)
+        uses: actions/cache/restore@v4
+        with:
+          path: dapur/cache
+          key: emb-v2-${{ github.run_id }}
+          restore-keys: emb-v2-
+
+      - name: Pulihkan cache bentuk 2D
+        uses: actions/cache/restore@v4
+        with:
+          path: dapur/cache_bentuk
+          key: bentuk2d-v1-${{ github.run_id }}
+          restore-keys: bentuk2d-v1-
+
+      - name: Pasang dependensi
+        run: |
+          {
+            python -m pip install --upgrade pip
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+            pip install "numpy<2" "transformers>=4.40,<4.50" pillow requests scipy scikit-learn
+          } > /tmp/pip_log.txt 2>&1 || { tail -n 5 /tmp/pip_log.txt; exit 1; }
+          echo "dependensi terpasang"
+
+      - name: Jalankan otak
+        working-directory: dapur
+        env:
+          MENIT_PANEN: ${{ github.event.inputs.menit_panen || '75' }}
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          ROBLOX_API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          UNIVERSE_ID: "10753176264"
+        shell: bash
+        run: |
+          python otak.py > otak_log.txt 2>&1 || { echo "otak gagal (log lengkap di repo dapur)"; exit 1; }
+          echo "otak selesai"
+
+      - name: Kartu item
+        id: kartu
+        continue-on-error: true
+        working-directory: dapur
+        shell: bash
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          BATAS_BENTUK: "12000"
+          MENIT_BENTUK: "18"
+        run: |
+          python kartu_item.py > kartu_log.txt 2>&1 || { echo "kartu gagal (paket kartu lama dipertahankan)"; exit 1; }
+          echo "kartu selesai"
+
+      - name: Simpan cache bentuk 2D
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: dapur/cache_bentuk
+          key: bentuk2d-v1-${{ github.run_id }}
+
+      - name: Simpan sidik jari ke cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: dapur/cache
+          key: emb-v2-${{ github.run_id }}
+
+      - name: Simpan hasil ke cabang data dapur (privat)
+        if: success()
+        working-directory: dapur
+        shell: bash
+        env:
+          KARTU_OUTCOME: ${{ steps.kartu.outcome }}
+        run: |
+          tail -n 120 otak_log.txt > LOG_TERAKHIR.txt 2>/dev/null || echo "log tidak ada" > LOG_TERAKHIR.txt
+          shopt -s nullglob
+          paths=(model meta bank/outfit_*.json data/panen.json.gz out LAPORAN_OTAK.md LOG_TERAKHIR.txt)
+          # Paket kartu diterbitkan utuh atau tidak sama sekali (sama dengan aturan di repo dapur).
+          if [ "$KARTU_OUTCOME" = success ] && python - > kartu_cek.txt 2>&1 <<'PY'
+          import json
+          from pathlib import Path
+          def read(name):
+              return json.loads((Path('kartu') / name).read_text(encoding='utf-8'))
+          info = read('info.json')
+          assert type(info['versi']) is int and info['versi'] > 0
+          assert info['skema'] == 7 and info['shard'] == 8
+          count = 0
+          for shard in range(info['shard']):
+              card = read(f'kartu_{shard}.json')
+              assert card['versi'] == info['versi'] and card['skema'] == info['skema']
+              assert isinstance(card['d'], dict)
+              for asset, row in card['d'].items():
+                  assert asset.isdecimal() and 0 < int(asset) < 2**53 and int(asset) % 8 == shard
+                  assert isinstance(row, list) and len(row) >= 37
+              count += len(card['d'])
+          assert type(info['n']) is int and count == info['n'] and count > 0
+          for name in ('tema_graf.json', 'badan_bukti.json'):
+              assert read(name)['versi'] == info['versi']
+          PY
+          then
+            paths+=(kartu/info.json kartu/kartu_{0..7}.json kartu/tema_graf.json kartu/badan_bukti.json LAPORAN_KARTU.md)
+            echo "paket kartu valid"
+          else
+            echo "paket kartu lama dipertahankan"
+          fi
+          s=0
+          bash data_cabang.sh simpan otak "Otak: panen + model kecocokan (putaran otomatis)" "${paths[@]}" > simpan_log.txt 2>&1 || s=$?
+          grep -E '^simpan' simpan_log.txt | sed -E 's/push ditolak.*/push ditolak (detail di repo dapur)/' || true
+          exit $s
+
+      - name: Simpan log lengkap ke repo dapur (cabang diag) bila gagal
+        if: failure()
+        continue-on-error: true
+        working-directory: dapur
+        shell: bash
+        run: |
+          d="$(mktemp -d)"
+          { echo "otak | run ${{ github.run_id }} | $(date -u +%FT%TZ)"
+            for f in ambil_log.txt otak_log.txt kartu_log.txt kartu_cek.txt simpan_log.txt; do echo "--- $f"; tail -n 80 "$f" 2>/dev/null; done
+          } > "$d/DIAG_OTAK.txt"
+          cp "$d/DIAG_OTAK.txt" .
+          t="$(GIT_INDEX_FILE="$d/idx" sh -c 'git add -f DIAG_OTAK.txt && git write-tree')"
+          c="$(echo "diag otak" | git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit-tree "$t")"
+          git push -q --force origin "$c:refs/heads/diag" > /dev/null 2>&1 && echo "log disimpan di repo dapur (cabang diag)"
+
+  terbit:
+    needs: otak
+    permissions:
+      contents: write
+    uses: ./.github/workflows/terbit-inti.yml
+    secrets: inherit
