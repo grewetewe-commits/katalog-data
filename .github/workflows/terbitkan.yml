@@ -1,7 +1,7 @@
 name: Terbitkan data (manual)
 
 # Menerbitkan ulang isi cabang `data` repo dapur ke repo publik tanpa menunggu putaran otak.
-# Juga jalan otomatis saat terbitkan.sh / workflow terbit diubah di main (secret TOKEN_DAPUR terpasang 2026-10-18).
+# Juga jalan otomatis saat terbitkan.sh / workflow terbit diubah di main (secret TOKEN_DAPUR diperbarui 2026-10-18).
 
 on:
   workflow_dispatch:
