@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Transport/validation only. No model training code or private logs are published.
+set -euo pipefail
+exec python3 - "$@" <<'PY'
+import concurrent.futures
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+PUBLIC_REPO = 'grewetewe-commits/katalog-data'
+FIXED = {'model/info.json', 'meta/badan.json', 'meta/sepatu.json',
+         'bank/ready_outfits.json', 'kartu/info.json', 'kartu/tema_graf.json',
+         'kartu/badan_bukti.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json'}
+SHARDS = re.compile(r'(?:model/item_|meta/harga_|bank/outfit_|kartu/kartu_)(?:0|[1-9][0-9]*)\.json\Z')
+
+class Invalid(Exception):
+    pass
+
+def require(ok):
+    if not ok:
+        raise Invalid('invalid package')
+
+def integer(value, low=1, high=2**53-1):
+    require(type(value) is int and low <= value <= high)
+    return value
+
+def allowed(name):
+    return name in FIXED or SHARDS.fullmatch(name) is not None
+
+def pairs(entries):
+    result = {}
+    for key, value in entries:
+        require(key not in result)
+        result[key] = value
+    return result
+
+def decode(raw):
+    obj = json.loads(raw, object_pairs_hook=pairs,
+                     parse_constant=lambda _: (_ for _ in ()).throw(Invalid('nonfinite')))
+    require(isinstance(obj, dict))
+    return obj
+
+def validate(files):
+    require(files and all(allowed(p) for p in files))
+    data = {p: decode(raw) for p, raw in files.items()}
+    model, card = data['model/info.json'], data['kartu/info.json']
+    mv, cv = integer(model['versi']), integer(card['versi'])
+    expected = set()
+    for folder, stem, field in [('model', 'item', 'shard_item'),
+                                ('meta', 'harga', 'shard_meta'),
+                                ('bank', 'outfit', 'shard_bank')]:
+        count = integer(model[field], high=256)
+        for k in range(count):
+            name = f'{folder}/{stem}_{k}.json'
+            expected.add(name)
+            row = data[name]
+            require(type(row['versi']) is int and row['versi'] == mv)
+            require(isinstance(row['seeds' if stem == 'outfit' else 'd'], list if stem == 'outfit' else dict))
+    count = integer(card['shard'], high=256)
+    require(card['skema'] == 7)
+    n = 0
+    for k in range(count):
+        name = f'kartu/kartu_{k}.json'
+        expected.add(name)
+        row = data[name]
+        require(type(row['versi']) is int and row['versi'] == cv and row['skema'] == card['skema'])
+        require(isinstance(row['d'], dict))
+        for asset, values in row['d'].items():
+            require(re.fullmatch(r'[1-9][0-9]*', asset) is not None)
+            require(0 < int(asset) < 2**53 and int(asset) % count == k)
+            require(isinstance(values, list) and len(values) >= 37)
+        n += len(row['d'])
+    require(n == integer(card['n']))
+    require({p for p in files if SHARDS.fullmatch(p)} == expected)
+    for name in ['meta/badan.json', 'meta/sepatu.json']:
+        require(type(data[name]['versi']) is int and data[name]['versi'] == mv)
+    for name in ['kartu/tema_graf.json', 'kartu/badan_bukti.json']:
+        require(type(data[name]['versi']) is int and data[name]['versi'] == cv)
+    for name in ['kartu/badan_bentuk.json']:
+        if name in data:
+            integer(data[name]['versi'])
+    if 'fisik3d/perlu_ukur.json' in data:
+        requested = data['fisik3d/perlu_ukur.json']
+        integer(requested['w'])
+        require(isinstance(requested['ids'], list))
+        for asset in requested['ids']:
+            integer(asset)
+    if 'bank/ready_outfits.json' in data:
+        ready = data['bank/ready_outfits.json']
+        require(ready['schema'] == 1 and isinstance(ready['seeds'], list))
+        integer(ready['version'])
+    return mv, cv
+
+def git(repo, *args, data=None, env=None):
+    # Never forward git diagnostics: private paths, contents or credentials may appear.
+    result = subprocess.run(['git', '-C', str(repo), *args], input=data,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    if result.returncode:
+        raise Invalid('git operation failed')
+    return result.stdout
+
+def collect(repo, ref):
+    files = {}
+    for entry in git(repo, 'ls-tree', '-rz', '--full-tree', ref).split(b'\0'):
+        if not entry:
+            continue
+        meta, rawname = entry.split(b'\t', 1)
+        name = rawname.decode('utf-8')
+        if not allowed(name):
+            continue
+        mode, kind, oid = meta.split()
+        require(mode in (b'100644', b'100755') and kind == b'blob')
+        files[name] = git(repo, 'cat-file', 'blob', oid.decode())
+    validate(files)
+    return files
+
+def commit_package(repo, files, temp):
+    env = dict(os.environ, GIT_INDEX_FILE=str(Path(temp) / 'public.index'),
+               GIT_AUTHOR_NAME='github-actions[bot]', GIT_COMMITTER_NAME='github-actions[bot]',
+               GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com',
+               GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com')
+    git(repo, 'read-tree', '--empty', env=env)
+    entries = []
+    for name, raw in sorted(files.items()):
+        oid = git(repo, 'hash-object', '-w', '--stdin', data=raw).strip()
+        entries.append(b'100644 ' + oid + b'\t' + name.encode() + b'\0')
+    git(repo, 'update-index', '-z', '--index-info', data=b''.join(entries), env=env)
+    tree = git(repo, 'write-tree', env=env).strip().decode()
+    # No -p: every published snapshot has exactly one root commit.
+    return git(repo, 'commit-tree', tree, data=b'Publish validated Roblox data\n', env=env).strip().decode()
+
+def current_public(repo):
+    refs = git(repo, 'ls-remote', '--heads', 'origin', 'refs/heads/data').split()
+    if not refs:
+        return '', None
+    git(repo, 'fetch', '-q', '--depth=1', 'origin', '+refs/heads/data:refs/remotes/origin/data')
+    sha = git(repo, 'rev-parse', 'refs/remotes/origin/data').strip().decode()
+    # Corrupt public data must be investigated; don't silently replace it.
+    return sha, collect(repo, sha)
+
+def purge(name):
+    try:
+        with urllib.request.urlopen(f'https://purge.jsdelivr.net/gh/{PUBLIC_REPO}@data/{name}', timeout=10) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+def publish(private, public):
+    for attempt in range(3):
+        try:
+            git(private, 'fetch', '-q', '--depth=1', 'origin', '+refs/heads/data:refs/remotes/origin/data')
+            files = collect(private, 'refs/remotes/origin/data')
+            mv, cv = validate(files)
+            old, previous = current_public(public)
+            if previous:
+                pm, pc = validate(previous)
+                require(mv >= pm and cv >= pc)
+                # Independently generated optional data must not vanish or move backwards.
+                for name in ['bank/ready_outfits.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json']:
+                    if name in previous:
+                        require(name in files)
+                        field = 'version' if name.startswith('bank/') else ('w' if name.startswith('fisik3d/') else 'versi')
+                        require(decode(files[name])[field] >= decode(previous[name])[field])
+            with tempfile.TemporaryDirectory(prefix='katalog-publish-') as temp:
+                commit = commit_package(public, files, temp)
+                git(public, 'push', '-q', f'--force-with-lease=refs/heads/data:{old}',
+                    'origin', f'{commit}:refs/heads/data')
+            print(f'Paket valid diterbitkan: {len(files)} file; model {mv}; kartu {cv}.')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(purge, sorted(files)))
+            print(f'Penyegaran CDN: {sum(results)}/{len(results)}; kegagalan CDN tidak membatalkan data.')
+            return
+        except Invalid:
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+
+def main():
+    if len(sys.argv) == 4 and sys.argv[1] == '--validate':
+        files = collect(Path(sys.argv[2]).resolve(), sys.argv[3])
+        mv, cv = validate(files)
+        print(f'Valid: {len(files)} file; model {mv}; kartu {cv}.')
+        for name in sorted(files):
+            print(name)
+        return
+    require(len(sys.argv) == 3 and os.environ.get('GITHUB_REPOSITORY') == PUBLIC_REPO)
+    private, public = map(lambda p: Path(p).resolve(), sys.argv[1:])
+    require(private != public)
+    publish(private, public)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception:
+        # Do not print exception messages/tracebacks from private JSON or git.
+        print('::error::Penerbitan gagal. Periksa izin atau integritas paket di repo dapur; data publik dipertahankan.')
+        sys.exit(1)
+PY
