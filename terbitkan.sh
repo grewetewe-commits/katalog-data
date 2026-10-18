@@ -151,6 +151,37 @@ def purge(name):
     except Exception:
         return False
 
+MODEL_GROUP = re.compile(r'(?:model/|meta/harga_|bank/outfit_)|meta/badan\.json\Z|meta/sepatu\.json\Z')
+KARTU_GROUP = re.compile(r'kartu/(?:info|kartu_[0-9]+|tema_graf|badan_bukti)\.json\Z')
+
+def jumlah_bank(files):
+    total = 0
+    for name, raw in files.items():
+        if name.startswith('bank/outfit_'):
+            total += len(decode(raw)['seeds'])
+    return total
+
+def ganti_kelompok(files, previous, pola):
+    baru = {n: r for n, r in files.items() if not pola.match(n)}
+    baru.update({n: r for n, r in previous.items() if pola.match(n)})
+    return baru
+
+def jaga_mutu(files, previous):
+    """Hasil putaran yang jauh lebih miskin dari versi publik (cache kosong, panen terputus, API Roblox gangguan)
+    TIDAK menggantikan versi publik: kelompok model / kartu lama dipertahankan, bagian lain (ready, fisik3d) tetap
+    diperbarui. Ambang: item < 85%, bank < 60%, kartu < 85% dari versi publik saat ini."""
+    catatan = []
+    nm, om = decode(files['model/info.json']), decode(previous['model/info.json'])
+    nb, ob = jumlah_bank(files), jumlah_bank(previous)
+    if (nm.get('n_item') or 0) < 0.85 * (om.get('n_item') or 0) or nb < 0.6 * ob:
+        files = ganti_kelompok(files, previous, MODEL_GROUP)
+        catatan.append('Model baru lebih miskin dari versi publik; versi publik dipertahankan.')
+    nk, ok_ = decode(files['kartu/info.json']), decode(previous['kartu/info.json'])
+    if (nk.get('n') or 0) < 0.85 * (ok_.get('n') or 0):
+        files = ganti_kelompok(files, previous, KARTU_GROUP)
+        catatan.append('Kartu baru lebih miskin dari versi publik; versi publik dipertahankan.')
+    return files, catatan
+
 def publish(private, public):
     for attempt in range(3):
         try:
@@ -159,6 +190,10 @@ def publish(private, public):
             mv, cv = validate(files)
             old, previous = current_public(public)
             if previous:
+                files, catatan = jaga_mutu(files, previous)
+                for c in catatan:
+                    print(c)
+                mv, cv = validate(files)
                 pm, pc = validate(previous)
                 require(mv >= pm and cv >= pc)
                 # Independently generated optional data must not vanish or move backwards.
