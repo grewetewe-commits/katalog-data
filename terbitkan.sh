@@ -16,7 +16,7 @@ import urllib.request
 PUBLIC_REPO = 'grewetewe-commits/katalog-data'
 FIXED = {'model/info.json', 'meta/badan.json', 'meta/sepatu.json',
          'bank/ready_outfits.json', 'kartu/info.json', 'kartu/tema_graf.json',
-         'kartu/badan_bukti.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json'}
+         'kartu/badan_bukti.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json', 'kartu/siluet.json'}
 SHARDS = re.compile(r'(?:model/item_|meta/harga_|bank/outfit_|kartu/kartu_)(?:0|[1-9][0-9]*)\.json\Z')
 # rev 51: keluarga item (keluarga.py) = kelompok opsional sendiri: 8 shard sekaligus atau tidak sama sekali
 KELUARGA = re.compile(r'kartu/keluarga_[0-7]\.json\Z')
@@ -98,6 +98,13 @@ def validate(files):
                 require(re.fullmatch(r'[1-9][0-9]*', asset) is not None and int(asset) % 8 == k)
                 require(isinstance(values, list) and len(values) % 2 == 0 and len(values) <= 32)
                 require(all(type(v) is int and 0 < v < 2**53 for v in values))
+    if 'kartu/siluet.json' in data:
+        sil = data['kartu/siluet.json']
+        integer(sil['versi'])
+        require(isinstance(sil['pmi'], dict) and len(sil['pmi']) <= 200)
+        for key, value in sil['pmi'].items():
+            require(re.fullmatch(r'[0-9],[0-9]\|[0-9],[0-9]', key) is not None)
+            require(type(value) in (int, float) and -1.0 <= value <= 1.0)
     if 'fisik3d/perlu_ukur.json' in data:
         requested = data['fisik3d/perlu_ukur.json']
         integer(requested['w'])
@@ -210,6 +217,8 @@ def publish(private, public):
                 pm, pc = validate(previous)
                 require(mv >= pm and cv >= pc)
                 # Independently generated optional data must not vanish or move backwards.
+                if 'kartu/siluet.json' in previous and 'kartu/siluet.json' not in files:
+                    files['kartu/siluet.json'] = previous['kartu/siluet.json']
                 for name in ['bank/ready_outfits.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json']:
                     if name in previous:
                         require(name in files)
