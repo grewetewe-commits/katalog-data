@@ -118,6 +118,17 @@ jobs:
           python kartu_item.py > kartu_log.txt 2>&1 || { echo "kartu gagal (paket kartu lama dipertahankan)"; exit 1; }
           echo "kartu selesai"
 
+      # rev 51: keluarga item (satu karakter / set) dari kata khas + kreator + outfit manusia + gambar MATA v3. Rp0.
+      - name: Keluarga item
+        id: keluarga
+        continue-on-error: true
+        timeout-minutes: 15
+        working-directory: dapur
+        shell: bash
+        run: |
+          python keluarga.py > keluarga_log.txt 2>&1 || { echo "keluarga gagal (versi lama dipertahankan)"; exit 1; }
+          echo "keluarga selesai"
+
       - name: Simpan cache bentuk 2D
         if: always()
         uses: actions/cache/save@v4
@@ -140,7 +151,7 @@ jobs:
           KARTU_OUTCOME: ${{ steps.kartu.outcome }}
         run: |
           tail -n 120 otak_log.txt > LOG_TERAKHIR.txt 2>/dev/null || echo "log tidak ada" > LOG_TERAKHIR.txt
-          { echo "--- mata v3"; tail -n 4 mata3_log.txt 2>/dev/null; } >> LOG_TERAKHIR.txt
+          { echo "--- mata v3"; tail -n 4 mata3_log.txt 2>/dev/null; echo "--- keluarga"; tail -n 8 keluarga_log.txt 2>/dev/null; } >> LOG_TERAKHIR.txt
           shopt -s nullglob
           paths=(model meta bank/outfit_*.json data/panen.json.gz out LAPORAN_OTAK.md LOG_TERAKHIR.txt)
           # Paket kartu diterbitkan utuh atau tidak sama sekali (sama dengan aturan di repo dapur).
@@ -170,6 +181,10 @@ jobs:
             echo "paket kartu valid"
           else
             echo "paket kartu lama dipertahankan"
+          fi
+          if [ "${{ steps.keluarga.outcome }}" = success ] && ls kartu/keluarga_{0..7}.json >/dev/null 2>&1; then
+            paths+=(kartu/keluarga_{0..7}.json)
+            echo "keluarga ikut disimpan"
           fi
           s=0
           bash data_cabang.sh simpan otak "Otak: panen + model kecocokan (putaran otomatis)" "${paths[@]}" > simpan_log.txt 2>&1 || s=$?
