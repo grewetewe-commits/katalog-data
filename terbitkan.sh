@@ -18,6 +18,8 @@ FIXED = {'model/info.json', 'meta/badan.json', 'meta/sepatu.json',
          'bank/ready_outfits.json', 'kartu/info.json', 'kartu/tema_graf.json',
          'kartu/badan_bukti.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json'}
 SHARDS = re.compile(r'(?:model/item_|meta/harga_|bank/outfit_|kartu/kartu_)(?:0|[1-9][0-9]*)\.json\Z')
+# rev 51: keluarga item (keluarga.py) = kelompok opsional sendiri: 8 shard sekaligus atau tidak sama sekali
+KELUARGA = re.compile(r'kartu/keluarga_[0-7]\.json\Z')
 
 class Invalid(Exception):
     pass
@@ -31,7 +33,7 @@ def integer(value, low=1, high=2**53-1):
     return value
 
 def allowed(name):
-    return name in FIXED or SHARDS.fullmatch(name) is not None
+    return name in FIXED or SHARDS.fullmatch(name) is not None or KELUARGA.fullmatch(name) is not None
 
 def pairs(entries):
     result = {}
@@ -85,6 +87,17 @@ def validate(files):
     for name in ['kartu/badan_bentuk.json']:
         if name in data:
             integer(data[name]['versi'])
+    kel = sorted(p for p in data if KELUARGA.fullmatch(p))
+    if kel:
+        require(len(kel) == 8)
+        kv = integer(data[kel[0]]['versi'])
+        for k in range(8):
+            row = data[f'kartu/keluarga_{k}.json']
+            require(row['versi'] == kv and isinstance(row['d'], dict))
+            for asset, values in row['d'].items():
+                require(re.fullmatch(r'[1-9][0-9]*', asset) is not None and int(asset) % 8 == k)
+                require(isinstance(values, list) and len(values) % 2 == 0 and len(values) <= 32)
+                require(all(type(v) is int and 0 < v < 2**53 for v in values))
     if 'fisik3d/perlu_ukur.json' in data:
         requested = data['fisik3d/perlu_ukur.json']
         integer(requested['w'])
@@ -202,6 +215,9 @@ def publish(private, public):
                         require(name in files)
                         field = 'version' if name.startswith('bank/') else ('w' if name.startswith('fisik3d/') else 'versi')
                         require(decode(files[name])[field] >= decode(previous[name])[field])
+                # keluarga: bila putaran ini tidak membawanya, versi publik lama tetap dipakai
+                if not any(KELUARGA.fullmatch(n) for n in files):
+                    files.update({n: r for n, r in previous.items() if KELUARGA.fullmatch(n)})
             with tempfile.TemporaryDirectory(prefix='katalog-publish-') as temp:
                 commit = commit_package(public, files, temp)
                 git(public, 'push', '-q', f'--force-with-lease=refs/heads/data:{old}',
