@@ -86,7 +86,20 @@ def validate(files):
         require(type(data[name]['versi']) is int and data[name]['versi'] == cv)
     for name in ['kartu/badan_bentuk.json']:
         if name in data:
-            integer(data[name]['versi'])
+            badan = data[name]
+            integer(badan['versi'])
+            # rev 53b BADAN v2: baris 5-8 kolom bilangan bulat; kelas badan opsional (<= 64 kelas, daftar item genap & bulat)
+            require(isinstance(badan['d'], dict))
+            for part, row in badan['d'].items():
+                require(re.fullmatch(r'[1-9][0-9]*', part) is not None and isinstance(row, list) and 5 <= len(row) <= 8)
+                require(all(type(v) is int and -1 <= v < 2**53 for v in row))
+            kelas = badan.get('kelas', {})
+            require(isinstance(kelas, dict) and len(kelas) <= 64)
+            for key, value in kelas.items():
+                require(re.fullmatch(r'[0-9]{1,2}', key) is not None and isinstance(value, dict))
+                require(isinstance(value.get('i', []), list) and len(value.get('i', [])) % 2 == 0 and len(value.get('i', [])) <= 400)
+                require(all(type(v) is int and 0 < v < 2**53 for v in value.get('i', [])))
+                require(isinstance(value.get('p', []), list) and all(type(v) is int and -1 <= v <= 1000 for v in value.get('p', [])))
     kel = sorted(p for p in data if KELUARGA.fullmatch(p))
     if kel:
         require(len(kel) == 8)

@@ -130,6 +130,22 @@ jobs:
           python keluarga.py > keluarga_log.txt 2>&1 || { echo "keluarga gagal (versi lama dipertahankan)"; exit 1; }
           echo "keluarga selesai"
 
+      # rev 53b: BADAN v2 -- tubuh dibaca dari gambar resmi bundle (MATA v3): badan berbentuk mirip berbagi bukti pemakaian 3D,
+      # kelas badan + item khas kelas itu (Zepeto/Luna -> layering 3D). Rp0, gagal = versi lama dipertahankan.
+      - name: Badan avatar
+        id: badan
+        continue-on-error: true
+        timeout-minutes: 25
+        working-directory: dapur
+        shell: bash
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+          MAKS_TANYA_BADAN: "600"
+        run: |
+          bash data_cabang.sh ambil kartu kartu/badan_bentuk.json > /dev/null 2>&1 || true
+          python badan_bentuk.py > badan_log.txt 2>&1 || { echo "badan gagal (versi lama dipertahankan)"; exit 1; }
+          echo "badan selesai"
+
       - name: Simpan cache bentuk 2D
         if: always()
         uses: actions/cache/save@v4
@@ -152,7 +168,7 @@ jobs:
           KARTU_OUTCOME: ${{ steps.kartu.outcome }}
         run: |
           tail -n 120 otak_log.txt > LOG_TERAKHIR.txt 2>/dev/null || echo "log tidak ada" > LOG_TERAKHIR.txt
-          { echo "--- mata v3"; tail -n 4 mata3_log.txt 2>/dev/null; echo "--- keluarga"; tail -n 8 keluarga_log.txt 2>/dev/null; } >> LOG_TERAKHIR.txt
+          { echo "--- mata v3"; tail -n 4 mata3_log.txt 2>/dev/null; echo "--- keluarga"; tail -n 8 keluarga_log.txt 2>/dev/null; echo "--- badan"; tail -n 6 badan_log.txt 2>/dev/null; } >> LOG_TERAKHIR.txt
           shopt -s nullglob
           paths=(model meta bank/outfit_*.json data/panen.json.gz out LAPORAN_OTAK.md LOG_TERAKHIR.txt)
           # Paket kartu diterbitkan utuh atau tidak sama sekali (sama dengan aturan di repo dapur).
@@ -187,6 +203,10 @@ jobs:
             paths+=(kartu/keluarga_{0..7}.json)
             [ -f kartu/siluet.json ] && paths+=(kartu/siluet.json)
             echo "keluarga ikut disimpan"
+          fi
+          if [ "${{ steps.badan.outcome }}" = success ] && [ -f kartu/badan_bentuk.json ]; then
+            paths+=(kartu/badan_bentuk.json LAPORAN_BADAN.md)
+            echo "badan ikut disimpan"
           fi
           s=0
           bash data_cabang.sh simpan otak "Otak: panen + model kecocokan (putaran otomatis)" "${paths[@]}" > simpan_log.txt 2>&1 || s=$?
