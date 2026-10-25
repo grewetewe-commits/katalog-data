@@ -126,6 +126,7 @@ jobs:
         working-directory: dapur
         shell: bash
         run: |
+          python siluet.py > siluet_log.txt 2>&1 || echo "siluet gagal (versi lama dipertahankan)"
           python keluarga.py > keluarga_log.txt 2>&1 || { echo "keluarga gagal (versi lama dipertahankan)"; exit 1; }
           echo "keluarga selesai"
 
@@ -184,6 +185,7 @@ jobs:
           fi
           if [ "${{ steps.keluarga.outcome }}" = success ] && ls kartu/keluarga_{0..7}.json >/dev/null 2>&1; then
             paths+=(kartu/keluarga_{0..7}.json)
+            [ -f kartu/siluet.json ] && paths+=(kartu/siluet.json)
             echo "keluarga ikut disimpan"
           fi
           s=0
