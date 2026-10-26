@@ -32,14 +32,14 @@ jobs:
         run: |
           {
             pip install torch --index-url https://download.pytorch.org/whl/cpu
-            pip install "transformers>=4.46,<4.50" pillow requests num2words accelerate
+            pip install "numpy<2" "transformers>=4.40,<4.50" pillow requests scipy scikit-learn "open_clip_torch>=2.24" timm ftfy
           } > /tmp/pip.txt 2>&1 || { tail -n 5 /tmp/pip.txt; exit 1; }
           echo "dependensi siap"
       - name: Uji
         working-directory: dapur
         env:
           HF_HUB_DISABLE_TELEMETRY: "1"
-        run: python uji_juri_vlm.py > uji_log.txt 2>&1 || echo "uji gagal (detail di repo dapur)"
+        run: python uji_juri_v2.py > uji_log.txt 2>&1 || echo "uji gagal (detail di repo dapur)"
       - name: Simpan hasil ke repo dapur
         if: always()
         working-directory: dapur
