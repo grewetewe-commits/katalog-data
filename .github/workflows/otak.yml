@@ -24,7 +24,12 @@ concurrency:
 jobs:
   otak:
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
+    # rev 56: actions: write hanya untuk membersihkan cache lama milik workflow ini (tidak ada akses lain yang ditambah)
+    permissions:
+      contents: read
+      actions: write
+    # rev 56: panen gaya 90 menit (dua endpoint avatar paralel) -> putaran ~3 jam; batas 300 menit tetap < jadwal 6 jam
+    timeout-minutes: 300
     steps:
       - name: Ambil kode dapur (privat)
         uses: actions/checkout@v4
@@ -159,6 +164,22 @@ jobs:
         with:
           path: dapur/cache
           key: emb-v2-${{ github.run_id }}
+
+      # rev 56: tiap putaran menyimpan cache baru (kunci ber-run_id) -> yang lama menumpuk. Sisakan 2 terbaru per jenis.
+      - name: Bersihkan cache lama
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          n=0
+          for awal in emb-v2- bentuk2d-v1-; do
+            for id in $(gh cache list --repo "$GITHUB_REPOSITORY" --key "$awal" --sort created_at --order desc --limit 100 --json id --jq '.[2:][].id'); do
+              gh cache delete "$id" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 && n=$((n + 1))
+            done
+          done
+          echo "cache lama dibersihkan: $n"
 
       - name: Simpan hasil ke cabang data dapur (privat)
         if: success()
