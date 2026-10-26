@@ -24,7 +24,8 @@ concurrency:
 jobs:
   otak:
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
+    # rev 56: panen gaya 90 menit (dua endpoint avatar paralel) -> putaran ~3 jam; batas 300 menit tetap < jadwal 6 jam
+    timeout-minutes: 300
     steps:
       - name: Ambil kode dapur (privat)
         uses: actions/checkout@v4
