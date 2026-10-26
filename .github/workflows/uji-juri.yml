@@ -1,0 +1,54 @@
+name: Uji juri
+
+# Uji kelayakan juri AI gratis (rev 57). Hanya jalan bila cabang uji-juri didorong. Kode & hasil di repo dapur (privat);
+# log publik sengaja hanya satu baris.
+on:
+  push:
+    branches: [uji-juri]
+
+permissions:
+  contents: read
+
+jobs:
+  uji:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Ambil kode dapur (privat)
+        uses: actions/checkout@v4
+        with:
+          repository: grewetewe-commits/katalog-embed
+          ref: claude/uji-juri
+          token: ${{ secrets.TOKEN_DAPUR }}
+          path: dapur
+          fetch-depth: 1
+      - name: Ambil data panen
+        working-directory: dapur
+        run: bash data_cabang.sh ambil otak data/panen.json.gz > /dev/null 2>&1 && echo "data siap"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Pasang dependensi
+        run: |
+          {
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+            pip install "transformers>=4.46,<4.50" pillow requests num2words accelerate
+          } > /tmp/pip.txt 2>&1 || { tail -n 5 /tmp/pip.txt; exit 1; }
+          echo "dependensi siap"
+      - name: Uji
+        working-directory: dapur
+        env:
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: python uji_juri_vlm.py > uji_log.txt 2>&1 || echo "uji gagal (detail di repo dapur)"
+      - name: Simpan hasil ke repo dapur
+        if: always()
+        working-directory: dapur
+        shell: bash
+        run: |
+          d="$(mktemp -d)"
+          cp hasil_uji_juri.json "$d/" 2>/dev/null || echo '{"galat":"tanpa hasil"}' > "$d/hasil_uji_juri.json"
+          tail -n 60 uji_log.txt > "$d/uji_log.txt" 2>/dev/null || true
+          cp "$d"/* .
+          t="$(GIT_INDEX_FILE="$d/idx" sh -c 'git add -f hasil_uji_juri.json uji_log.txt && git write-tree')"
+          c="$(echo "hasil uji juri" | git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit-tree "$t")"
+          git push -q --force origin "$c:refs/heads/hasil-uji-juri" > /dev/null 2>&1 && echo "hasil disimpan"
