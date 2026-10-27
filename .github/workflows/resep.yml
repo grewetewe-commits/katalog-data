@@ -1,0 +1,145 @@
+name: Resep
+
+# Pembuat RESEP OUTFIT per item. Tahap tersendiri, BUKAN bagian dari putaran otak: putaran otak sudah memakai
+# ~120 dari 150 menit yang diizinkan, jadi menumpangkan resep di sana berisiko memotongnya di tengah jalan.
+#
+# Kode ada di repo PRIVAT katalog-embed (dapur). Workflow ini meng-checkout kode itu dengan TOKEN_DAPUR,
+# membaca hasil otak dari cabang `data`, membuat resep, menyimpannya kembali ke cabang `data` dapur sebagai
+# grup "resep", lalu menerbitkan file daftar putih ke repo publik ini.
+#
+# Gagal di sini tidak menggagalkan apa pun: otak dan map tetap berjalan, dan resep publik yang lama
+# dipertahankan oleh terbitkan.sh.
+
+on:
+  schedule:
+    # 2 jam setelah putaran otak (otak: 17 */6). Memberi otak waktu selesai dan menyimpan hasilnya dulu.
+    - cron: "17 2/6 * * *"
+  workflow_dispatch:
+    inputs:
+      menit:
+        description: "Batas menit pembuatan resep (default 45)"
+        default: "45"
+      top_n:
+        description: "Resep disimpan per item (default 50)"
+        default: "50"
+      q_l1:
+        description: "Ambang mutu L1, 0-20 (19 = persentil 95)"
+        default: "19"
+      q_l2:
+        description: "Ambang mutu L2, 0-20 (19 = persentil 95)"
+        default: "19"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resep
+  cancel-in-progress: false
+
+jobs:
+  resep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Ambil kode dapur (privat)
+        uses: actions/checkout@v4
+        with:
+          repository: grewetewe-commits/katalog-embed
+          token: ${{ secrets.TOKEN_DAPUR }}
+          path: dapur
+          fetch-depth: 1
+
+      - name: Ambil hasil otak dari cabang data
+        working-directory: dapur
+        shell: bash
+        run: |
+          {
+            bash data_cabang.sh ambil otak model meta data/panen.json.gz
+            bash data_cabang.sh ambil kartu kartu
+          } > ambil_log.txt 2>&1 || { echo "ambil gagal"; tail -n 20 ambil_log.txt; exit 1; }
+          for p in model/info.json data/panen.json.gz; do
+            [ -f "$p" ] || { echo "berkas wajib tidak ada: $p"; exit 1; }
+          done
+          echo "hasil otak siap"
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pasang dependensi
+        run: |
+          python -m pip install --upgrade pip > /tmp/pip.txt 2>&1
+          pip install "numpy<2" >> /tmp/pip.txt 2>&1 || { tail -n 5 /tmp/pip.txt; exit 1; }
+          echo "numpy terpasang"
+
+      - name: Buat resep
+        working-directory: dapur
+        shell: bash
+        env:
+          RESEP_MENIT: ${{ github.event.inputs.menit || '45' }}
+          RESEP_TOP_N: ${{ github.event.inputs.top_n || '50' }}
+          RESEP_Q_L1: ${{ github.event.inputs.q_l1 || '19' }}
+          RESEP_Q_L2: ${{ github.event.inputs.q_l2 || '19' }}
+        run: |
+          python jalankan_resep.py > resep_log.txt 2>&1 || { echo "resep gagal"; tail -n 20 resep_log.txt; exit 1; }
+          tail -n 6 resep_log.txt
+          [ -f resep/info.json ] || { echo "resep/info.json tidak dibuat"; exit 1; }
+
+      - name: Periksa paket resep sebelum disimpan
+        working-directory: dapur
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          info = json.loads(Path('resep/info.json').read_text(encoding='utf-8'))
+          versi, n = info['versi'], info['shard_resep']
+          assert isinstance(versi, int) and versi > 0
+          assert isinstance(n, int) and 1 <= n <= 256
+          total = 0
+          for s in range(n):
+              d = json.loads(Path(f'resep/resep_{s}.json').read_text(encoding='utf-8'))
+              assert d['versi'] == versi
+              assert isinstance(d['outfit'], list) and isinstance(d['badan'], list)
+              for asset, rujuk in d['item'].items():
+                  assert asset.isdecimal() and int(asset) % n == s
+                  assert rujuk and all(0 <= i < len(d['outfit']) for i in rujuk)
+              total += len(d['item'])
+          cakupan = info.get('cakupan_persen') or 0
+          print(f'paket resep valid: {total} item, {n} shard, cakupan {cakupan}%')
+          # Paket kosong tidak boleh menimpa resep lama yang masih bagus.
+          assert total > 0, 'tidak ada item berresep'
+          PY
+
+      - name: Simpan resep ke cabang data dapur (privat)
+        working-directory: dapur
+        shell: bash
+        run: |
+          tail -n 40 resep_log.txt > LOG_RESEP.txt 2>/dev/null || true
+          s=0
+          bash data_cabang.sh simpan resep "Resep: outfit per item (putaran otomatis)" resep LOG_RESEP.txt > simpan_log.txt 2>&1 || s=$?
+          grep -E '^simpan' simpan_log.txt || true
+          exit $s
+
+      - name: Simpan log lengkap ke cabang diag bila gagal
+        if: failure()
+        continue-on-error: true
+        working-directory: dapur
+        shell: bash
+        run: |
+          d="$(mktemp -d)"
+          { echo "resep | run ${{ github.run_id }} | $(date -u +%FT%TZ)"
+            for f in ambil_log.txt resep_log.txt simpan_log.txt; do echo "--- $f"; tail -n 80 "$f" 2>/dev/null; done
+          } > "$d/DIAG_RESEP.txt"
+          cp "$d/DIAG_RESEP.txt" .
+          t="$(GIT_INDEX_FILE="$d/idx" sh -c 'git add -f DIAG_RESEP.txt && git write-tree')"
+          c="$(echo "diag resep" | git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit-tree "$t")"
+          git push -q --force origin "$c:refs/heads/diag" > /dev/null 2>&1 && echo "log disimpan di cabang diag"
+
+  terbit:
+    needs: resep
+    permissions:
+      contents: write
+    uses: ./.github/workflows/terbit-inti.yml
+    secrets: inherit

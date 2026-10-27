@@ -277,6 +277,14 @@ def publish(private, public):
                 # keluarga: bila putaran ini tidak membawanya, versi publik lama tetap dipakai
                 if not any(KELUARGA.fullmatch(n) for n in files):
                     files.update({n: r for n, r in previous.items() if KELUARGA.fullmatch(n)})
+                # resep: dibuat tahap tersendiri yang jalan lebih jarang daripada otak. Bila putaran ini tidak
+                # membawanya, resep publik lama dipertahankan -- map tidak boleh kehilangan resep hanya karena
+                # putaran otak berjalan tanpa tahap resep.
+                if not any(RESEP.fullmatch(n) for n in files):
+                    files.update({n: r for n, r in previous.items()
+                                  if RESEP.fullmatch(n) or n == 'resep/info.json'})
+                elif 'resep/info.json' in previous and 'resep/info.json' in files:
+                    require(decode(files['resep/info.json'])['versi'] >= decode(previous['resep/info.json'])['versi'])
             with tempfile.TemporaryDirectory(prefix='katalog-publish-') as temp:
                 commit = commit_package(public, files, temp)
                 git(public, 'push', '-q', f'--force-with-lease=refs/heads/data:{old}',
