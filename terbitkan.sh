@@ -103,40 +103,6 @@ def validate(files):
                 require(isinstance(value.get('i', []), list) and len(value.get('i', [])) % 2 == 0 and len(value.get('i', [])) <= 400)
                 require(all(type(v) is int and 0 < v < 2**53 for v in value.get('i', [])))
                 require(isinstance(value.get('p', []), list) and all(type(v) is int and -1 <= v <= 1000 for v in value.get('p', [])))
-    # rev 58 RESEP: tabel outfit unik + tabel badan + rujukan indeks per item. Semua shard atau tidak sama sekali.
-    rsp = sorted(p for p in data if RESEP.fullmatch(p))
-    if rsp or 'resep/info.json' in data:
-        require('resep/info.json' in data and rsp)
-        rinfo = data['resep/info.json']
-        rv = integer(rinfo['versi'])
-        n_shard = integer(rinfo['shard_resep'], high=256)
-        require(rsp == sorted(f'resep/resep_{k}.json' for k in range(n_shard)))
-        for k in range(n_shard):
-            row = data[f'resep/resep_{k}.json']
-            require(row['versi'] == rv)
-            outfit, badan, item = row['outfit'], row['badan'], row['item']
-            require(isinstance(outfit, list) and isinstance(badan, list) and isinstance(item, dict))
-            require(len(outfit) <= 400000 and len(badan) <= 400000)
-            for e in outfit:
-                require(isinstance(e, dict) and isinstance(e['i'], list) and 1 <= len(e['i']) <= 32)
-                require(all(type(v) is int and 0 < v < 2**53 for v in e['i']))
-                require(type(e['b']) is int and 0 <= e['b'] < len(badan))
-                sep = e.get('s')
-                if sep is not None:
-                    require(isinstance(sep, list) and len(sep) == 2)
-                    require(all(type(v) is int and 0 < v < 2**53 for v in sep))
-            for bd in badan:
-                require(isinstance(bd, dict) and bd['r'] in ('R6', 'R15'))
-                require(isinstance(bd['bp'], list) and len(bd['bp']) == 6)
-                require(all(type(v) is int and 0 <= v < 2**53 for v in bd['bp']))
-                require(isinstance(bd['sc'], list) and len(bd['sc']) in (0, 6))
-                require(all(type(v) in (int, float) and 0 <= v <= 2 for v in bd['sc']))
-            for asset, rujuk in item.items():
-                require(re.fullmatch(r'[1-9][0-9]*', asset) is not None)
-                require(0 < int(asset) < 2**53 and int(asset) % n_shard == k)
-                require(isinstance(rujuk, list) and 1 <= len(rujuk) <= 400)
-                require(all(type(v) is int and 0 <= v < len(outfit) for v in rujuk))
-
     kel = sorted(p for p in data if KELUARGA.fullmatch(p))
     if kel:
         require(len(kel) == 8)
@@ -175,6 +141,62 @@ def git(repo, *args, data=None, env=None):
         raise Invalid('git operation failed')
     return result.stdout
 
+def buang_resep_bila_cacat(files):
+    """Resep cacat dibuang diam-diam; penerbitan data inti tetap jalan."""
+    nama = [p for p in files if RESEP.fullmatch(p) or p == 'resep/info.json']
+    if not nama:
+        return
+    try:
+        validate_resep({p: decode(r) for p, r in files.items()
+                        if RESEP.fullmatch(p) or p == 'resep/info.json'})
+    except Exception as ex:
+        for p in nama:
+            files.pop(p, None)
+        print(f'resep DIBUANG dari paket (tidak valid: {type(ex).__name__}); data inti tetap diterbitkan')
+
+
+def validate_resep(data):
+    """Validasi paket resep SENDIRI, terpisah dari validate().
+
+    Resep adalah tambahan: kalau rusak, yang boleh gugur hanya resep. Dulu pemeriksaan ini ada di dalam
+    validate(), sehingga satu shard resep cacat menggagalkan SELURUH penerbitan -- model, kartu, meta dan
+    bank ikut tidak terbit. Data inti map tidak boleh bisa dijatuhkan oleh fitur tambahan.
+    """
+    # rev 58 RESEP: tabel outfit unik + tabel badan + rujukan indeks per item. Semua shard atau tidak sama sekali.
+    rsp = sorted(p for p in data if RESEP.fullmatch(p))
+    if rsp or 'resep/info.json' in data:
+        require('resep/info.json' in data and rsp)
+        rinfo = data['resep/info.json']
+        rv = integer(rinfo['versi'])
+        n_shard = integer(rinfo['shard_resep'], high=256)
+        require(rsp == sorted(f'resep/resep_{k}.json' for k in range(n_shard)))
+        for k in range(n_shard):
+            row = data[f'resep/resep_{k}.json']
+            require(row['versi'] == rv)
+            outfit, badan, item = row['outfit'], row['badan'], row['item']
+            require(isinstance(outfit, list) and isinstance(badan, list) and isinstance(item, dict))
+            require(len(outfit) <= 400000 and len(badan) <= 400000)
+            for e in outfit:
+                require(isinstance(e, dict) and isinstance(e['i'], list) and 1 <= len(e['i']) <= 32)
+                require(all(type(v) is int and 0 < v < 2**53 for v in e['i']))
+                require(type(e['b']) is int and 0 <= e['b'] < len(badan))
+                sep = e.get('s')
+                if sep is not None:
+                    require(isinstance(sep, list) and len(sep) == 2)
+                    require(all(type(v) is int and 0 < v < 2**53 for v in sep))
+            for bd in badan:
+                require(isinstance(bd, dict) and bd['r'] in ('R6', 'R15'))
+                require(isinstance(bd['bp'], list) and len(bd['bp']) == 6)
+                require(all(type(v) is int and 0 <= v < 2**53 for v in bd['bp']))
+                require(isinstance(bd['sc'], list) and len(bd['sc']) in (0, 6))
+                require(all(type(v) in (int, float) and 0 <= v <= 2 for v in bd['sc']))
+            for asset, rujuk in item.items():
+                require(re.fullmatch(r'[1-9][0-9]*', asset) is not None)
+                require(0 < int(asset) < 2**53 and int(asset) % n_shard == k)
+                require(isinstance(rujuk, list) and 1 <= len(rujuk) <= 400)
+                require(all(type(v) is int and 0 <= v < len(outfit) for v in rujuk))
+
+
 def collect(repo, ref):
     files = {}
     for entry in git(repo, 'ls-tree', '-rz', '--full-tree', ref).split(b'\0'):
@@ -187,6 +209,7 @@ def collect(repo, ref):
         mode, kind, oid = meta.split()
         require(mode in (b'100644', b'100755') and kind == b'blob')
         files[name] = git(repo, 'cat-file', 'blob', oid.decode())
+    buang_resep_bila_cacat(files)
     validate(files)
     return files
 
