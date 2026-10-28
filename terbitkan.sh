@@ -15,11 +15,13 @@ import urllib.request
 
 PUBLIC_REPO = 'grewetewe-commits/katalog-data'
 FIXED = {'model/info.json', 'meta/badan.json', 'meta/sepatu.json',
-         'bank/ready_outfits.json', 'kartu/info.json', 'kartu/tema_graf.json',
+         'bank/ready_outfits.json', 'kartu/info.json', 'kartu/tema_graf.json', 'resep/info.json',
          'kartu/badan_bukti.json', 'kartu/badan_bentuk.json', 'fisik3d/perlu_ukur.json', 'kartu/siluet.json'}
 SHARDS = re.compile(r'(?:model/item_|meta/harga_|bank/outfit_|kartu/kartu_)(?:0|[1-9][0-9]*)\.json\Z')
 # rev 51: keluarga item (keluarga.py) = kelompok opsional sendiri: 8 shard sekaligus atau tidak sama sekali
 KELUARGA = re.compile(r'kartu/keluarga_[0-7]\.json\Z')
+# rev 58: resep outfit per item. Kelompok OPSIONAL seperti keluarga -- bila belum ada, penerbitan tetap jalan.
+RESEP = re.compile(r'resep/resep_(?:0|[1-9][0-9]*)\.json\Z')
 
 class Invalid(Exception):
     pass
@@ -33,7 +35,8 @@ def integer(value, low=1, high=2**53-1):
     return value
 
 def allowed(name):
-    return name in FIXED or SHARDS.fullmatch(name) is not None or KELUARGA.fullmatch(name) is not None
+    return (name in FIXED or SHARDS.fullmatch(name) is not None
+            or KELUARGA.fullmatch(name) is not None or RESEP.fullmatch(name) is not None)
 
 def pairs(entries):
     result = {}
@@ -100,6 +103,40 @@ def validate(files):
                 require(isinstance(value.get('i', []), list) and len(value.get('i', [])) % 2 == 0 and len(value.get('i', [])) <= 400)
                 require(all(type(v) is int and 0 < v < 2**53 for v in value.get('i', [])))
                 require(isinstance(value.get('p', []), list) and all(type(v) is int and -1 <= v <= 1000 for v in value.get('p', [])))
+    # rev 58 RESEP: tabel outfit unik + tabel badan + rujukan indeks per item. Semua shard atau tidak sama sekali.
+    rsp = sorted(p for p in data if RESEP.fullmatch(p))
+    if rsp or 'resep/info.json' in data:
+        require('resep/info.json' in data and rsp)
+        rinfo = data['resep/info.json']
+        rv = integer(rinfo['versi'])
+        n_shard = integer(rinfo['shard_resep'], high=256)
+        require(rsp == sorted(f'resep/resep_{k}.json' for k in range(n_shard)))
+        for k in range(n_shard):
+            row = data[f'resep/resep_{k}.json']
+            require(row['versi'] == rv)
+            outfit, badan, item = row['outfit'], row['badan'], row['item']
+            require(isinstance(outfit, list) and isinstance(badan, list) and isinstance(item, dict))
+            require(len(outfit) <= 400000 and len(badan) <= 400000)
+            for e in outfit:
+                require(isinstance(e, dict) and isinstance(e['i'], list) and 1 <= len(e['i']) <= 32)
+                require(all(type(v) is int and 0 < v < 2**53 for v in e['i']))
+                require(type(e['b']) is int and 0 <= e['b'] < len(badan))
+                sep = e.get('s')
+                if sep is not None:
+                    require(isinstance(sep, list) and len(sep) == 2)
+                    require(all(type(v) is int and 0 < v < 2**53 for v in sep))
+            for bd in badan:
+                require(isinstance(bd, dict) and bd['r'] in ('R6', 'R15'))
+                require(isinstance(bd['bp'], list) and len(bd['bp']) == 6)
+                require(all(type(v) is int and 0 <= v < 2**53 for v in bd['bp']))
+                require(isinstance(bd['sc'], list) and len(bd['sc']) in (0, 6))
+                require(all(type(v) in (int, float) and 0 <= v <= 2 for v in bd['sc']))
+            for asset, rujuk in item.items():
+                require(re.fullmatch(r'[1-9][0-9]*', asset) is not None)
+                require(0 < int(asset) < 2**53 and int(asset) % n_shard == k)
+                require(isinstance(rujuk, list) and 1 <= len(rujuk) <= 400)
+                require(all(type(v) is int and 0 <= v < len(outfit) for v in rujuk))
+
     kel = sorted(p for p in data if KELUARGA.fullmatch(p))
     if kel:
         require(len(kel) == 8)
@@ -240,6 +277,14 @@ def publish(private, public):
                 # keluarga: bila putaran ini tidak membawanya, versi publik lama tetap dipakai
                 if not any(KELUARGA.fullmatch(n) for n in files):
                     files.update({n: r for n, r in previous.items() if KELUARGA.fullmatch(n)})
+                # resep: dibuat tahap tersendiri yang jalan lebih jarang daripada otak. Bila putaran ini tidak
+                # membawanya, resep publik lama dipertahankan -- map tidak boleh kehilangan resep hanya karena
+                # putaran otak berjalan tanpa tahap resep.
+                if not any(RESEP.fullmatch(n) for n in files):
+                    files.update({n: r for n, r in previous.items()
+                                  if RESEP.fullmatch(n) or n == 'resep/info.json'})
+                elif 'resep/info.json' in previous and 'resep/info.json' in files:
+                    require(decode(files['resep/info.json'])['versi'] >= decode(previous['resep/info.json'])['versi'])
             with tempfile.TemporaryDirectory(prefix='katalog-publish-') as temp:
                 commit = commit_package(public, files, temp)
                 git(public, 'push', '-q', f'--force-with-lease=refs/heads/data:{old}',
