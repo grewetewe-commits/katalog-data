@@ -275,6 +275,33 @@ def jaga_mutu(files, previous):
         catatan.append('Kartu baru lebih miskin dari versi publik; versi publik dipertahankan.')
     return files, catatan
 
+# ---- RAHASIA DAPUR: cara berpikir sistem tidak pernah ikut terbit ke repo PUBLIK ----
+# model/info.json memuat seluruh "otak": bobot desain (w), matriks resep antar-slot, harmoni warna (pmi, pasang)
+# dan JURI lengkap (W1, b1, W2, b2, mu, sd, kuantil, daftar fitur, contoh uji). Siapa pun yang mengunduh file
+# publik itu bisa meniru sistemnya. Sejak rev 58d bagian itu DICORET saat penerbitan: dapur tetap menyimpannya
+# di cabang `data` privat, dan map memakai salinan server-only di dalam place (ServerScriptService.OtakRahasia),
+# yang tidak pernah dikirim Roblox ke klien.
+# Yang DIBUANG hanya kunci di bawah. Semua angka ringkas (jumlah item, versi, metrik umum) tetap terbit supaya
+# jaga_mutu dan pemeriksaan versi di map tidak berubah perilakunya.
+RAHASIA = ('desain', 'juri', 'warna_v2', 'gender_2d')
+
+def rahasiakan(files):
+    """model/info.json yang terbit = salinan tanpa kunci RAHASIA. Dipanggil SESUDAH semua validasi, supaya
+    validate()/jaga_mutu() tetap menilai paket apa adanya."""
+    name = 'model/info.json'
+    raw = files.get(name)
+    if raw is None:
+        return files, 0
+    info = decode(raw)
+    dibuang = [k for k in RAHASIA if k in info]
+    if not dibuang:
+        return files, 0
+    bersih = {k: v for k, v in info.items() if k not in RAHASIA}
+    bersih['rahasia'] = True          # penanda: map tahu otak datang dari dalam place, bukan dari file publik
+    files = dict(files)
+    files[name] = json.dumps(bersih, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    return files, len(raw) - len(files[name])
+
 def publish(private, public):
     for attempt in range(3):
         try:
@@ -308,6 +335,9 @@ def publish(private, public):
                                   if RESEP.fullmatch(n) or n == 'resep/info.json'})
                 elif 'resep/info.json' in previous and 'resep/info.json' in files:
                     require(decode(files['resep/info.json'])['versi'] >= decode(previous['resep/info.json'])['versi'])
+            files, hemat = rahasiakan(files)
+            if hemat:
+                print(f'Rahasia dapur dicoret dari model/info.json ({hemat} byte tidak terbit).')
             with tempfile.TemporaryDirectory(prefix='katalog-publish-') as temp:
                 commit = commit_package(public, files, temp)
                 git(public, 'push', '-q', f'--force-with-lease=refs/heads/data:{old}',
